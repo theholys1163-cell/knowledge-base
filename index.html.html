@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>사내 지식 베이스 (CSV 연동)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Noto Sans KR', sans-serif;
+        }
+        /* 스크롤바 디자인 */
+        ::-webkit-scrollbar {
+            width: 10px;
+            height: 10px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 10px;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #cbd5e1;
+            border-radius: 10px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #94a3b8;
+        }
+        .prose {
+            max-width: 100%;
+        }
+        .prose h2 {
+            font-size: 1.5rem;
+            font-weight: 700;
+            margin-bottom: 1rem;
+            border-bottom: 2px solid #e2e8f0;
+            padding-bottom: 0.5rem;
+        }
+        .prose h3 {
+            font-size: 1.25rem;
+            font-weight: 600;
+            margin-top: 1.5rem;
+            margin-bottom: 0.5rem;
+        }
+        .prose p {
+            margin-bottom: 1rem;
+            line-height: 1.6;
+        }
+        .prose ul {
+            list-style-type: disc;
+            margin-left: 1.5rem;
+            margin-bottom: 1rem;
+        }
+        .prose li {
+            margin-bottom: 0.5rem;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 text-gray-800">
+
+    <div class="container mx-auto p-4 md:p-8">
+        <header class="text-center mb-8">
+            <h1 class="text-3xl md:text-4xl font-bold text-gray-900">사내 지식 베이스</h1>
+            <p class="text-gray-600 mt-2">궁금한 용어나 정보를 검색해 보세요.</p>
+        </header>
+
+        <!-- 검색창 -->
+        <div class="mb-8">
+            <input type="text" id="search-input" placeholder="검색어 입력 (예: 'TTA', '공급자적합성')..." class="w-full p-4 border border-gray-300 rounded-lg shadow-sm text-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
+        </div>
+
+        <!-- 메인 컨텐츠 (검색 결과 및 상세 보기) -->
+        <div class="flex flex-col md:flex-row gap-8">
+
+            <!-- 검색 결과 목록 -->
+            <div class="md:w-1/3 bg-white p-6 rounded-2xl shadow-lg">
+                <div class="flex justify-between items-center mb-4 border-b pb-2">
+                    <h2 class="text-xl font-semibold">검색 결과</h2>
+                </div>
+                <div id="results-list" class="space-y-2 max-h-[60vh] overflow-y-auto pr-2">
+                    <!-- 데이터 로딩 상태가 여기에 표시됩니다. -->
+                    <p id="results-placeholder" class="text-gray-500">데이터를 불러오는 중입니다...</p>
+                </div>
+            </div>
+
+            <!-- 상세 내용 -->
+            <div class="md:w-2/3 bg-white p-6 md:p-8 rounded-2xl shadow-lg">
+                <div id="detail-view" class="max-h-[60vh] overflow-y-auto pr-2 prose">
+                    <h2 id="detail-title" class="text-2xl font-bold text-gray-800">항목을 선택하세요</h2>
+                    <div id="detail-content" class="mt-4 text-gray-700">
+                        <p>왼쪽 검색 결과에서 항목을 클릭하면 여기에 상세 내용이 표시됩니다.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- (필수) Google Sheets "웹에 게시" CSV URL ---
+        // 1. "결재문서" CSV URL
+        const GOOGLE_SHEET_CSV_URL_1 = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vS_3-COhRiH_d5-aMwdrz4f7xZpUJTOubdg6pHJr1IfrXUX1xP_pvY1KtSA4cO3r3a0R7lsxfF3A43d/pub?output=csv';
+        // 2. "인증 전체" CSV URL
+        const GOOGLE_SHEET_CSV_URL_2 = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vSvvO39hKuuGQQ5us4MUWVgNAY0Kf3ol59n4s1pF77Ppugto594JmuYxGNgxLxl7_I6beHQ4FEsuxKt/pub?output=csv';
+        // ------------------------------------------------
+
+        // --- 데이터 처리 맵 (시트별 헤더 정의) ---
+        
+        // 1. "결재문서" 헤더 정의
+        const headersMap_Gyeoljae = {
+            type: '결재문서',
+            // 이 필드들은 CSV에 반드시 존재해야 합니다.
+            required: {
+                id: '문서번호',
+                title: '제목',
+                category: '문서분류',
+                author: '기안자',
+                department: '기안부서',
+                status: '문서상태'
+            },
+            // 이 필드들은 선택 사항입니다 (상세보기에만 사용)
+            optional: {
+                draftDate: '기안일자',
+                arrivalDate: '도착일자',
+                endDate: '종결일자',
+                readStatus: '열람'
+            }
+        };
+
+        // 2. "인증 전체" 헤더 정의
+        const headersMap_Injeung = {
+            type: '인증문서',
+            required: {
+                id: '번호',
+                productName: '기자재명칭',
+                modelName: '모델명',
+                company: '상호',
+                certType: '인증 종류',
+                certNumber: '인증번호(또는 성적서 번호)'
+            },
+            optional: {
+                country: '제조국가',
+                certDate: '인증 연월일',
+                manufacturer: '제조자',
+                derivedModels: '파생모델명',
+                testStandard: '시험규격',
+                certStatus: '인증상태',
+                remarks: '비고',
+                factory1: '제조공장1',
+                factory2: '제조공장2',
+                factory3: '제조공장3'
+            }
+        };
+
+
+        // --- 데이터 저장 변수 ---
+        let wikiData = [];
+
+        // --- DOM 요소 ---
+        const searchInput = document.getElementById('search-input');
+        const resultsList = document.getElementById('results-list');
+        const resultsPlaceholder = document.getElementById('results-placeholder');
+        const detailTitle = document.getElementById('detail-title');
+        const detailContent = document.getElementById('detail-content');
+
+        // --- 함수 ---
+
+        /**
+         * (베스트 버전) 
+         * 셀 안에 줄바꿈이나 따옴표가 포함된 복잡한 CSV 텍스트를
+         * 정확하게 파싱하는 함수입니다.
+         */
+        function parseCSV(text) {
+            const data = [];
+            const rows = [];
+            let currentRow = [];
+            let currentField = '';
+            let inQuotes = false;
+
+            // BOM(Byte Order Mark) 제거 (파일 맨 앞 특수 문자)
+            if (text.charCodeAt(0) === 0xFEFF) {
+                text = text.substring(1);
+            }
+
+            for (let i = 0; i < text.length; i++) {
+                const char = text[i];
+                const nextChar = text[i + 1];
+
+                if (inQuotes) {
+                    // 따옴표 안에 있을 때
+                    if (char === '"' && nextChar === '"') {
+                        // 연속된 따옴표 " " 는 하나의 " 문자로 처리
+                        currentField += '"';
+                        i++; // 다음 문자 건너뛰기
+                    } else if (char === '"') {
+                        // 따옴표의 끝
+                        inQuotes = false;
+                    } else {
+                        // 일반 문자
+                        currentField += char;
+                    }
+                } else {
+                    // 따옴표 밖에 있을 때
+                    if (char === '"') {
+                        // 따옴표의 시작
+                        inQuotes = true;
+                    } else if (char === ',') {
+                        // 필드(열) 구분자
+                        currentRow.push(currentField);
+                        currentField = '';
+                    } else if (char === '
+' || char === '') {
+                        // 행 구분자 (CRLF, LF 모두 처리)
+                        
+                        // 현재 필드와 행을 저장
+                        currentRow.push(currentField);
+                        rows.push(currentRow);
+                        
+                        // 초기화
+                        currentRow = [];
+                        currentField = '';
+                        
+                        // 만약 CR LF (
+) 조합이면 
+ 은 건너뛰기
+                        if (char === '' && nextChar === '
+') {
+                            i++;
+                        }
+                    } else {
+                        // 일반 문자
+                        currentField += char;
+                    }
+                }
+            }
+
+            // 마지막 남은 데이터 처리
+            if (currentField) {
+                currentRow.push(currentField);
+            }
+            if (currentRow.length > 0) {
+                rows.push(currentRow);
+            }
+
+            // 파싱된 행을 JSON 객체로 변환
+            if (rows.length < 2) {
+                console.error("CSV에 헤더 또는 데이터가 없습니다.");
+                return [];
+            }
+            
+            const headers = rows[0].map(h => h.toLowerCase().trim());
+            
+            for (let i = 1; i < rows.length; i++) {
+                const row = rows[i];
+                // 헤더와 데이터 열 개수가 다르면 해당 행 스킵 (불완전한 데이터 방지)
+                if(row.length !== headers.length) continue;
+
+                const rowData = {};
+                for (let j = 0; j < headers.length; j++) {
+                    rowData[headers[j]] = row[j] || ''; // 빈 값 처리
+                }
+                data.push(rowData);
+            }
+            
+            return data;
+        }
+
+
+        // CSV 데이터를 앱에서 사용할 표준 JSON 객체로 변환 (시트별 매핑)
+        function processCSVData(csvData, headersMap) {
+            const processed = [];
+            
+            // CSV 헤더에서 각 필드의 인덱스(순서)를 찾습니다.
+            const indices = {};
+            const allHeaders = { ...headersMap.required, ...headersMap.optional };
+            
+            for (const key in allHeaders) {
+                const headerName = allHeaders[key].toLowerCase();
+                const index = csvData.length > 0 ? csvData[0].hasOwnProperty(headerName) : false;
+                
+                // required 필드가 CSV에 존재하는지 확인
+                if (headersMap.required[key] && !index) {
+                     console.error(`[${headersMap.type}] 필수 헤더를 찾을 수 없습니다: "${allHeaders[key]}"`);
+                     throw new Error(`[${headersMap.type}] 시트의 헤더가 올바르지 않습니다. "${allHeaders[key]}" 열을 확인하세요.`);
+                }
+                indices[key] = headerName; // 인덱스 대신 헤더 이름을 저장
+            }
+
+            // 데이터 행 처리
+            for (const row of csvData) {
+                try {
+                    let item = {
+                        id: row[indices.id] || `${headersMap.type}-${processed.length}`,
+                        title: '',
+                        category: '',
+                        summary: '',
+                        content: ''
+                    };
+
+                    if (headersMap.type === '결재문서') {
+                        item.title = row[indices.title] || '제목 없음';
+                        item.category = `결재문서: ${row[indices.category] || '분류 없음'}`;
+                        item.summary = `기안자: ${row[indices.author] || 'N/A'} (${row[indices.department] || 'N/A'}) | 상태: ${row[indices.status] || 'N/A'}`;
+                        item.content = `
+                            <p><strong>문서번호:</strong> ${row[indices.id] || 'N/A'}</p>
+                            <p><strong>문서분류:</strong> ${row[indices.category] || 'N/A'}</p>
+                            <p><strong>기안부서:</strong> ${row[indices.department] || 'N/A'}</p>
+                            <p><strong>기안자:</strong> ${row[indices.author] || 'N/A'}</p>
+                            <p><strong>문서상태:</strong> ${row[indices.status] || 'N/A'}</p>
+                            <hr class="my-4 border-gray-200">
+                            <p><strong>기안일자:</strong> ${row[indices.draftDate] || 'N/A'}</p>
+                            <p><strong>도착일자:</strong> ${row[indices.arrivalDate] || 'N/A'}</p>
+                            <p><strong>종결일자:</strong> ${row[indices.endDate] || 'N/A'}</p>
+                            <p><strong>열람:</strong> ${row[indices.readStatus] || 'N/A'}</p>
+                        `;
+                    } else if (headersMap.type === '인증문서') {
+                        item.title = `${row[indices.productName] || '기자재명 없음'} (모델명: ${row[indices.modelName] || '모델명 없음'})`;
+                        item.category = `인증문서: ${row[indices.certType] || 'N/A'}`;
+                        item.summary = `상호: ${row[indices.company] || '상호 없음'} | 인증번호: ${row[indices.certNumber] || 'N/A'}`;
+                        item.content = `
+                            <p><strong>상호:</strong> ${row[indices.company] || 'N/A'}</p>
+                            <p><strong>기자재명칭:</strong> ${row[indices.productName] || 'N/A'}</p>
+                            <p><strong>모델명:</strong> ${row[indices.modelName] || 'N/A'}</p>
+                            <p><strong>파생모델명:</strong> ${row[indices.derivedModels] || 'N/A'}</p>
+                            <p><strong>제조자:</strong> ${row[indices.manufacturer] || 'N/A'}</p>
+                            <p><strong>제조국가:</strong> ${row[indices.country] || 'N/A'}</p>
+                            <hr class="my-4 border-gray-200">
+                            <p><strong>인증 종류:</strong> ${row[indices.certType] || 'N/A'}</p>
+                            <p><strong>인증번호:</strong> ${row[indices.certNumber] || 'N/A'}</p>
+                            <p><strong>시험규격:</strong> ${row[indices.testStandard] || 'N/A'}</p>
+                            <p><strong>인증 연월일:</strong> ${row[indices.certDate] || 'N/A'}</p>
+                            <p><strong>인증상태:</strong> ${row[indices.certStatus] || 'N/A'}</p>
+                            <p><strong>비고:</strong> ${row[indices.remarks] || 'N/A'}</p>
+                            <hr class="my-4 border-gray-200">
+                            <p><strong>제조공장1:</strong> ${row[indices.factory1] || 'N/A'}</p>
+                            <p><strong>제조공장2:</strong> ${row[indices.factory2] || 'N/A'}</p>
+                            <p><strong>제조공장3:</strong> ${row[indices.factory3] || 'N/A'}</p>
+                        `;
+                    }
+                    processed.push(item);
+                } catch (e) {
+                     console.warn(`데이터 처리 중 오류 발생 (행 스킵): ${e.message}`, row);
+                }
+            }
+            return processed;
+        }
+
+        // 검색어에 따라 결과 목록을 렌더링하는 함수
+        function renderResults(searchTerm = '') {
+            resultsList.innerHTML = ''; // 기존 목록 초기화
+            searchTerm = searchTerm.toLowerCase();
+
+            const filteredData = wikiData.filter(item => 
+                item.title.toLowerCase().includes(searchTerm) ||
+                item.summary.toLowerCase().includes(searchTerm) ||
+                item.category.toLowerCase().includes(searchTerm) ||
+                item.content.toLowerCase().includes(searchTerm) // (수정됨) .toLowerCase() 추가
+            );
+
+            if (filteredData.length === 0) {
+                if (searchTerm) {
+                    resultsList.innerHTML = `<p class="text-gray-500">"'${searchTerm}'"에 대한 검색 결과가 없습니다.</p>`;
+                } else {
+                    resultsList.innerHTML = `<p class="text-gray-500">표시할 데이터가 없습니다.</p>`;
+                }
+                return;
+            }
+
+            filteredData.forEach(item => {
+                const resultItem = document.createElement('div');
+                resultItem.className = 'p-3 border rounded-lg hover:bg-indigo-50 cursor-pointer transition';
+                resultItem.innerHTML = `
+                    <h3 class="font-semibold text-indigo-700">${item.title}</h3>
+                    <p class="text-sm text-gray-600">${item.category}</p>
+                    <p class="text-sm text-gray-600">${item.summary}</p>
+                `;
+                resultItem.addEventListener('click', () => renderDetail(item));
+                resultsList.appendChild(resultItem);
+            });
+        }
+
+        // 선택한 항목의 상세 내용을 보여주는 함수
+        function renderDetail(item) {
+            detailTitle.textContent = item.title;
+            detailContent.innerHTML = item.content; // HTML로 렌더링
+        }
+
+
+        // --- 이벤트 리스너 ---
+        searchInput.addEventListener('keyup', (event) => {
+            renderResults(event.target.value);
+        });
+
+        // --- 데이터 로드 및 초기화 ---
+        async function loadDataAndInitialize() {
+            resultsPlaceholder.textContent = "Google Sheets에서 데이터를 불러오는 중입니다...";
+            
+            try {
+                // 두 URL에서 동시에 데이터 fetch
+                const [response1, response2] = await Promise.all([
+                    fetch(GOOGLE_SHEET_CSV_URL_1, { cache: "no-store" }),
+                    fetch(GOOGLE_SHEET_CSV_URL_2, { cache: "no-store" })
+                ]);
+
+                if (!response1.ok || !response2.ok) {
+                    throw new Error(`데이터 로드 실패: ${response1.statusText} / ${response2.statusText}`);
+                }
+
+                const [text1, text2] = await Promise.all([
+                    response1.text(),
+                    response2.text()
+                ]);
+
+                // 1. CSV 파싱 (가장 강력한 '베스트' 버전 파서 사용)
+                const csvData1 = parseCSV(text1);
+                const csvData2 = parseCSV(text2);
+                
+                // 2. 파싱된 데이터를 표준 JSON으로 변환
+                const processedData1 = processCSVData(csvData1, headersMap_Gyeoljae);
+                const processedData2 = processCSVData(csvData2, headersMap_Injeung);
+
+                // 3. 두 데이터 합치기
+                wikiData = processedData1.concat(processedData2);
+                
+                if (wikiData.length > 0) {
+                    resultsPlaceholder.remove(); // "로딩 중" 메시지 제거
+                    renderResults(''); // 전체 목록으로 초기 렌더링
+                } else {
+                    resultsPlaceholder.textContent = '데이터를 불러왔으나 표시할 항목이 없습니다.';
+                }
+
+            } catch (error) {
+                console.error("데이터 로드 오류:", error);
+                resultsPlaceholder.textContent = `데이터 로드 실패: ${error.message}. '웹에 게시' 설정과 URL을 확인하세요.`;
+                resultsPlaceholder.classList.add('text-red-500');
+            }
+        }
+
+        // 스크립트 시작
+        loadDataAndInitialize();
+
+    </script>
+</body>
+</html>
